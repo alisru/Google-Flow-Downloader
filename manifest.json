@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flow Bulk Downloader",
+  "version": "1.0.0",
+  "description": "Bulk-download images and videos generated in Google Flow: current project, a manual selection, or your entire library.",
+  "permissions": ["downloads", "storage", "scripting", "activeTab", "unlimitedStorage"],
+  "host_permissions": [
+    "https://labs.google/*",
+    "https://flow-content.google/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Google Flow Bulk Downloader"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/fx/tools/flow/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

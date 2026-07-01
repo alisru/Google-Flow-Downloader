@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Google Flow Bulk Downloader</title>
+<style>
+  body {
+    width: 320px;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #1f1f1f;
+    color: #f0f0f0;
+    padding: 14px;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 10px 0;
+  }
+  .row {
+    margin-bottom: 8px;
+  }
+  button {
+    width: 100%;
+    padding: 9px 10px;
+    border-radius: 6px;
+    border: none;
+    background: #2b6de8;
+    color: white;
+    font-size: 13px;
+    cursor: pointer;
+    margin-bottom: 6px;
+  }
+  button.secondary {
+    background: #3a3a3a;
+  }
+  button.danger {
+    background: #7a3b3b;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  #status {
+    font-size: 12px;
+    color: #cfcfcf;
+    margin-top: 10px;
+    min-height: 40px;
+    white-space: pre-wrap;
+    line-height: 1.4;
+  }
+  .divider {
+    border-top: 1px solid #3a3a3a;
+    margin: 10px 0;
+  }
+  .note {
+    font-size: 11px;
+    color: #9a9a9a;
+    line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+  <h1>Google Flow Bulk Downloader</h1>
+
+  <div class="row" style="display:flex; align-items:center; gap:6px;">
+    <input type="checkbox" id="chkZip" style="width:auto; margin:0;" />
+    <label for="chkZip" style="font-size:12px;">Download as one .zip instead of separate files</label>
+  </div>
+  <div class="note" id="zipNote">Applies to the two buttons below. Not offered for the whole library, since that can mean fetching hundreds of large video files into memory before it can write a single zip.</div>
+
+  <div class="divider"></div>
+
+  <div class="row">
+    <button id="btnCurrentProject">Download current project (all)</button>
+  </div>
+
+  <div class="row">
+    <button id="btnToggleSelect" class="secondary">Enable selection mode</button>
+    <button id="btnDownloadSelected" disabled>Download selected</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="row">
+    <button id="btnLibrary" class="danger">Download entire library</button>
+    <div class="note">Walks every project you have and downloads all media as separate files. Can take a while for large libraries and may need one round of tuning if Flow's internal data shape has changed (details show up in the extension's service worker console).</div>
+  </div>
+
+  <div id="status">Open a Google Flow project tab to get started.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

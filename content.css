@@ -1,0 +1,82 @@
+/* Google Flow Bulk Downloader - selection checkboxes + in-page toolbar */
+
+.gfbd-checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 2px solid #ffffff;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 9999;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.gfbd-checkbox.gfbd-checked {
+  background: #1a73e8;
+  border-color: #1a73e8;
+}
+
+.gfbd-checkbox.gfbd-checked::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 2px;
+  width: 6px;
+  height: 11px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+body.gfbd-selection-mode img[src*="getMediaUrlRedirect"] {
+  outline: 1px dashed rgba(255, 255, 255, 0.25);
+}
+
+.gfbd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 10px;
+  padding: 2px 4px;
+}
+
+.gfbd-btn {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f0f0f0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gfbd-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.gfbd-btn.gfbd-btn-active {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: white;
+}
+
+.gfbd-btn.gfbd-btn-primary {
+  background: #2b6de8;
+  border-color: #2b6de8;
+  color: white;
+}
+
+.gfbd-status {
+  font-size: 11px;
+  color: #b6b6b6;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
