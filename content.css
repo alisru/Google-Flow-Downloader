@@ -1,6 +1,33 @@
 /* Google Flow Bulk Downloader - selection checkboxes + in-page toolbar */
 
+/* Big left-side hit zone: roughly the left half of the tile is one large
+   click target for toggling selection, so you don't have to hit a tiny
+   corner box. The right side of the tile is left alone so it still opens
+   the item normally. The zone itself stays faint (near-invisible) until
+   hover/checked, with a small checkbox glyph drawn in the corner via
+   ::before/::after so it still reads as a checkbox at a glance. */
 .gfbd-checkbox {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 46%;
+  height: 100%;
+  z-index: 9999;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0);
+  transition: background 0.12s ease;
+}
+
+.gfbd-checkbox:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.gfbd-checkbox.gfbd-checked {
+  background: rgba(26, 115, 232, 0.22);
+}
+
+.gfbd-checkbox::before {
+  content: "";
   position: absolute;
   top: 8px;
   left: 8px;
@@ -9,12 +36,10 @@
   border-radius: 5px;
   border: 2px solid #ffffff;
   background: rgba(0, 0, 0, 0.45);
-  z-index: 9999;
-  cursor: pointer;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
-.gfbd-checkbox.gfbd-checked {
+.gfbd-checkbox.gfbd-checked::before {
   background: #1a73e8;
   border-color: #1a73e8;
 }
@@ -22,8 +47,8 @@
 .gfbd-checkbox.gfbd-checked::after {
   content: "";
   position: absolute;
-  left: 6px;
-  top: 2px;
+  left: 14px;
+  top: 10px;
   width: 6px;
   height: 11px;
   border: solid white;
@@ -36,11 +61,27 @@ body.gfbd-selection-mode img[src*="getMediaUrlRedirect"] {
 }
 
 .gfbd-toolbar {
+  /* Fixed float, deliberately not a child of Flow's own header row, see the
+     long comment above ensureToolbar() in content.js for why. Anchored from
+     the RIGHT edge, not the left: the project title next to the back arrow
+     is variable-length (can run long, "Jun 30, 02:46 AM Altruistic Actor
+     Archive" for example) and a left-anchored position collided with it.
+     Flow's own right-side icon cluster (Add Media/Help/Settings/More/
+     PRO badge/avatar) is fixed-width and always right-aligned regardless of
+     title length or viewport width, so anchoring off the right edge with
+     enough clearance to sit just left of that cluster is the stable choice. */
+  position: fixed;
+  top: 12px;
+  right: 250px;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-right: 10px;
-  padding: 2px 4px;
+  padding: 4px 6px;
+  background: rgba(20, 20, 20, 0.9);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  z-index: 999999;
 }
 
 .gfbd-btn {

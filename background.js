@@ -7,7 +7,7 @@
 importScripts('vendor/jszip.min.js');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const STAGGER_MS = 350; // delay between download() calls to be polite to the API
+const STAGGER_MS = 150; // delay between download() calls to be polite to the API
 
 let progressListeners = new Set();
 
@@ -96,6 +96,7 @@ async function fetchMediaBytes(id) {
 }
 
 const ZIP_CHUNK_SIZE = 60; // items per zip part -- keeps memory/time per zip bounded
+const FETCH_CONCURRENCY = 6; // parallel media fetches per zip chunk
 
 function chunkArray(arr, size) {
   const out = [];
@@ -103,17 +104,40 @@ function chunkArray(arr, size) {
   return out;
 }
 
+// Runs `worker` over `items` with at most `limit` in flight at once, rather
+// than strictly one-at-a-time. The old version awaited each media fetch
+// before starting the next, so total time was ~N times one round trip; this
+// keeps several requests in flight simultaneously, bounded so a huge batch
+// doesn't try to open hundreds of connections at once.
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function runner() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  const runners = Array.from({ length: Math.min(limit, items.length) }, runner);
+  await Promise.all(runners);
+  return results;
+}
+
 async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOverall, titleById) {
   const zip = new JSZip();
   let done = doneSoFar;
   let failed = 0;
   const usedNames = new Set();
-  for (const id of ids) {
+
+  await runWithConcurrency(ids, FETCH_CONCURRENCY, async (id) => {
     try {
       const { buf, ext } = await fetchMediaBytes(id);
       let entryName = filenameBaseFor(id, titleById);
       let candidate = `${entryName}${ext}`;
       let n = 2;
+      // usedNames is shared across concurrent workers but JS is single
+      // threaded between awaits, so this check-then-add is still safe: no
+      // two workers can interleave inside this synchronous block.
       while (usedNames.has(candidate)) {
         candidate = `${entryName} (${n})${ext}`;
         n++;
@@ -126,9 +150,16 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
       console.warn('[GFBD] zip: failed to fetch', id, e);
     }
     broadcastProgress({ jobId, stage: 'zipping', done, failed, total: totalOverall });
-  }
+  });
+
   broadcastProgress({ jobId, stage: 'compressing', done, failed, total: totalOverall });
-  const base64 = await zip.generateAsync({ type: 'base64', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  // STORE, not DEFLATE: every file going into this zip is already a
+  // compressed format (jpg/png/webp/mp4). Running DEFLATE over
+  // already-compressed bytes buys close to zero size reduction but still
+  // costs real CPU time proportional to total bytes, that was a big chunk
+  // of the "zipping 50 files takes a minute" complaint. STORE just packs
+  // the bytes as-is, no compression pass.
+  const base64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
   const dataUrl = 'data:application/zip;base64,' + base64;
   await new Promise((resolve, reject) => {
     chrome.downloads.download(
@@ -263,11 +294,21 @@ async function fetchProjectMediaIds(projectId) {
   );
   if (!res.ok) throw new Error(`projectInitialData HTTP ${res.status}`);
   const data = await res.json();
-  // Confirmed directly against a live project: each media item is an object
-  // with a "name" field (the UUID used everywhere else) and a "displayName"
-  // field (a human-readable title, e.g. "Politician on dock NDIS ship").
-  // Walk the payload structurally for that pair rather than blindly
-  // regex-matching every UUID in the response.
+  // flow.projectInitialData uses (at least) two different shapes for media
+  // items, confirmed directly against two different live projects:
+  //  1. Flat: some object has both "name" (the media UUID) and
+  //     "displayName" (the title) as direct sibling fields.
+  //  2. Workflow wrapper (what most real projects actually use, confirmed
+  //     against a 427-item project): the outer object's own "name" is the
+  //     *workflow's* id, not a media id at all, the real media id and title
+  //     live one level down as sibling fields metadata.primaryMediaId and
+  //     metadata.displayName. Blindly trusting every bare "name" match
+  //     (the old behavior) meant workflow ids themselves were getting added
+  //     to the download list as if they were media ids on this shape, which
+  //     would just fail to resolve. Skip the flat-name match whenever the
+  //     object also carries a .metadata sibling (that marks it as a
+  //     workflow wrapper, its .name isn't a media id) and pull the real id
+  //     from .metadata.primaryMediaId instead.
   const titleById = {};
   (function walk(node) {
     if (Array.isArray(node)) {
@@ -275,11 +316,21 @@ async function fetchProjectMediaIds(projectId) {
       return;
     }
     if (node && typeof node === 'object') {
-      if (typeof node.name === 'string' && UUID_RE.test(node.name)) {
+      const meta = node.metadata;
+      const hasMetadata = meta && typeof meta === 'object';
+      if (!hasMetadata && typeof node.name === 'string' && UUID_RE.test(node.name)) {
         if (typeof node.displayName === 'string' && node.displayName.trim()) {
           titleById[node.name] = node.displayName.trim();
         } else if (!(node.name in titleById)) {
           titleById[node.name] = null;
+        }
+      }
+      if (hasMetadata && typeof meta.primaryMediaId === 'string' && UUID_RE.test(meta.primaryMediaId)) {
+        const id = meta.primaryMediaId;
+        if (typeof meta.displayName === 'string' && meta.displayName.trim()) {
+          titleById[id] = meta.displayName.trim();
+        } else if (!(id in titleById)) {
+          titleById[id] = null;
         }
       }
       for (const k of Object.keys(node)) walk(node[k]);
