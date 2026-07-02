@@ -152,14 +152,21 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
     broadcastProgress({ jobId, stage: 'zipping', done, failed, total: totalOverall });
   });
 
-  broadcastProgress({ jobId, stage: 'compressing', done, failed, total: totalOverall });
+  broadcastProgress({ jobId, stage: 'compressing', percent: 0, done, failed, total: totalOverall });
   // STORE, not DEFLATE: every file going into this zip is already a
   // compressed format (jpg/png/webp/mp4). Running DEFLATE over
   // already-compressed bytes buys close to zero size reduction but still
   // costs real CPU time proportional to total bytes, that was a big chunk
   // of the "zipping 50 files takes a minute" complaint. STORE just packs
   // the bytes as-is, no compression pass.
-  const base64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
+  // generateAsync's second argument is a progress callback JSZip calls
+  // repeatedly while it works (metadata.percent, 0-100), this is what makes
+  // "Compressing..." into an actual moving number instead of a static
+  // message with no way to tell whether it's stuck or just working.
+  const base64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' }, (metadata) => {
+    broadcastProgress({ jobId, stage: 'compressing', percent: Math.round(metadata.percent), done, failed, total: totalOverall });
+  });
+  broadcastProgress({ jobId, stage: 'saving-to-disk', done, failed, total: totalOverall });
   const dataUrl = 'data:application/zip;base64,' + base64;
   await new Promise((resolve, reject) => {
     chrome.downloads.download(
@@ -170,6 +177,11 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
       }
     );
   });
+  // Per-part completion, distinct from the overall-job "finished" broadcast
+  // downloadIdsAsZip sends once every part is done, this is what lets a
+  // multi-part batch show "part 1 of 3 saved" as each one actually lands
+  // instead of going quiet until the entire batch finishes.
+  broadcastProgress({ jobId, stage: 'part-saved', partLabel: filenameBase, done, failed, total: totalOverall });
   return { done, failed };
 }
 
@@ -201,10 +213,6 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     suggest();
     return;
   }
-  if (/\.[a-z0-9]{2,4}$/i.test(item.filename)) {
-    suggest();
-    return;
-  }
   let ext = '';
   const url = item.finalUrl || item.url || '';
   if (/\/video\//.test(url)) ext = '.mp4';
@@ -215,7 +223,26 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     else if (item.mime.includes('jpeg') || item.mime.includes('jpg')) ext = '.jpg';
     else if (item.mime.includes('webp')) ext = '.webp';
   }
-  suggest({ filename: item.filename + (ext || '.bin') });
+  if (!ext) {
+    // Couldn't determine anything ourselves, leave whatever Chrome already
+    // suggested rather than guessing blind.
+    suggest();
+    return;
+  }
+  // Unconditionally strip whatever extension-looking suffix is already on
+  // item.filename and replace it with what we just determined, rather than
+  // the old "if it already looks like it has one, leave it alone" check.
+  // That check was the actual .jfif bug: our download URL
+  // (media.getMediaUrlRedirect?name=<uuid>) has no file extension of its
+  // own for Chrome to go on, so Chrome's own pre-listener heuristic sniffs
+  // the content type and guesses an extension before this listener even
+  // runs, for image/jpeg it sometimes lands on .jfif rather than .jpg. That
+  // Chrome-guessed .jfif matched the old "already has an extension, skip
+  // it" check, so it was never getting corrected to the .jpg we actually
+  // determine from the real finalUrl/mime here. Always recomputing and
+  // overwriting fixes that.
+  const withoutExt = item.filename.replace(/\.[a-z0-9]{2,5}$/i, '');
+  suggest({ filename: withoutExt + ext });
 });
 
 // ---- Library-wide discovery ----

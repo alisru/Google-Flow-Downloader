@@ -468,9 +468,13 @@ ensureToolbar();
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'PROGRESS') {
     if (msg.stage === 'zipping') {
-      setStatusText(`Zip: ${msg.done}/${msg.total}${msg.failed ? ` (${msg.failed} failed)` : ''}${msg.finished ? ' — saved.' : ''}`);
+      setStatusText(`Zip: ${msg.done}/${msg.total}${msg.failed ? ` (${msg.failed} failed)` : ''}${msg.finished ? ' — all parts saved.' : ''}`);
     } else if (msg.stage === 'compressing') {
-      setStatusText('Compressing into a zip...');
+      setStatusText(`Compressing... ${msg.percent ?? 0}%`);
+    } else if (msg.stage === 'saving-to-disk') {
+      setStatusText('Zip ready, saving to disk...');
+    } else if (msg.stage === 'part-saved') {
+      setStatusText(`Saved "${msg.partLabel}.zip" (${msg.done}/${msg.total} files so far).`);
     } else if (msg.done !== undefined) {
       setStatusText(`Downloading ${msg.done}/${msg.total}${msg.finished ? ' — done.' : ''}`);
     }

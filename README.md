@@ -26,6 +26,24 @@ Zip stability: to keep any one zip job bounded, batches larger than 60 items are
 
 Entire library: click "Download entire library" from any Flow tab. It pages through every project you own, reads each project's media, then downloads all of it.
 
+## Speed, and why zipping is slower than plain downloads
+
+Plain (non-zip) downloads and zip downloads work fundamentally differently, and that difference is why zipping takes noticeably longer for the same number of files.
+
+Plain downloads never touch the file's actual bytes in the extension itself: each ID is just handed to `chrome.downloads.download()` pointed at the redirect endpoint, and Chrome's own download manager follows the redirect and writes the file straight to disk. The extension's only job is calling that once per file, staggered 150ms apart so as not to fire everything at the exact same instant. That stagger is the main cost here (roughly 150ms x number of files, plus whatever Chrome's download manager itself takes), not the fetch.
+
+Zip mode is different by necessity: to bundle files into one archive, the extension has to actually fetch each file's real bytes into memory first (there's no way to hand a zip library a URL and have it stream the bytes in on its own here), then run the zip library over all of it. That's real network transfer time for every file, not just a redirect hand-off, and it has to finish before the archive can be written.
+
+Two things speed this up as much as currently seems reasonable without more testing:
+
+Concurrent fetches: files are fetched 6 at a time rather than one at a time. This is a deliberate middle ground, not a measured optimum, going higher would likely finish faster still, but there's no confirmed data yet on whether Google's endpoint rate-limits a burst of simultaneous requests to media.getMediaUrlRedirect, and 6 was chosen as a reasonably safe default rather than something benchmarked against an actual limit. If this turns out to be too conservative (or too aggressive) in practice, this is the number to revisit.
+
+No compression: the zip is built with STORE (bytes packed as-is) instead of DEFLATE (actual compression). Every file going into one of these zips is already a compressed format, jpg, png, webp, or mp4, and running DEFLATE over already-compressed bytes buys close to zero extra size reduction while still costing real CPU time proportional to total bytes. Skipping that pass was one of the two biggest wins for zip speed, alongside the concurrent fetches above.
+
+Realistic expectation: zipping a batch of images should now be well under the roughly one-minute-for-50-files figure this was measured at before these two changes, but zipping will still always be slower than plain downloads of the same batch, because it has to pull every byte through the extension first. For very large videos in particular, expect zip mode to take a while regardless, that's inherent to fetching full video files into memory rather than a fixable inefficiency.
+
+Zip stability (chunking into multiple parts once a batch is larger than 60 items) is unrelated to this speed discussion, see the paragraph above about that. It bounds memory and blast radius of a failure, it isn't a speed optimization.
+
 ## File naming
 
 Downloaded files and zip entries are named using Flow's own displayName for each item (for example "Politician on dock NDIS ship.jpg") instead of the raw media ID. This was confirmed directly by reading a live project's flow.projectInitialData response: every media item is an object with a name field (the UUID used everywhere else in the app) and a displayName field (the human-readable title Flow itself generates). If an item has no displayName for some reason, its filename falls back to the raw ID rather than failing.

@@ -90,10 +90,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.stage === 'listing-media') {
     setStatus(`Reading media from project ${msg.projectIndex || 0}/${msg.totalProjects || '?'}. ${msg.mediaFound || 0} items found so far.`);
   } else if (msg.stage === 'zipping') {
-    const finishedNote = msg.finished ? ' Zip saved.' : '';
+    const finishedNote = msg.finished ? ' All zip parts saved.' : '';
     setStatus(`Fetching ${msg.done}/${msg.total} for zip (${msg.failed} failed).${finishedNote}`);
   } else if (msg.stage === 'compressing') {
-    setStatus(`Fetched all files, compressing into a single zip now (this can take a moment for large batches)...`);
+    setStatus(`Compressing into a zip... ${msg.percent ?? 0}%`);
+  } else if (msg.stage === 'saving-to-disk') {
+    setStatus('Zip ready, saving to disk...');
+  } else if (msg.stage === 'part-saved') {
+    setStatus(`Saved "${msg.partLabel}.zip" (${msg.done}/${msg.total} files so far).`);
   } else if (msg.stage === 'downloading' || msg.done !== undefined) {
     const finishedNote = msg.finished ? ' Done.' : '';
     setStatus(`Downloading ${msg.done}/${msg.total} (${msg.failed} failed).${finishedNote}`);
