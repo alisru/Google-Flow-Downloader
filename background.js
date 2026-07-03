@@ -6,13 +6,35 @@
 
 importScripts('vendor/jszip.min.js');
 
+// Bump this string on every meaningful change and check it in the service
+// worker console (chrome://extensions -> "service worker" link under this
+// extension) after reloading. If the console doesn't show this exact tag,
+// the reload didn't actually pick up new code, that's the fastest way to
+// tell "the fix isn't working" apart from "the extension is still running
+// the old version" when testing changes.
+const GFBD_BUILD = 'gfbd-build-2026-07-02l-filename-map-fix';
+console.log('[GFBD] background service worker loaded:', GFBD_BUILD);
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const STAGGER_MS = 150; // delay between download() calls to be polite to the API
 
 let progressListeners = new Set();
 
-function broadcastProgress(payload) {
+// chrome.runtime.sendMessage only reaches other *extension* pages (the
+// popup, when it happens to be open) -- it does NOT reach content scripts
+// running inside a tab. That's the actual reason the in-page toolbar's
+// status text was getting stuck on its initial string forever: every
+// progress update was being sent in a way the toolbar's listener could
+// never physically receive, not a bug in the listener itself. Reaching a
+// content script requires chrome.tabs.sendMessage(tabId, ...) instead, so
+// this now does both: chrome.runtime.sendMessage for the popup, plus
+// chrome.tabs.sendMessage for the tab that actually kicked off the job (if
+// known, threaded through as tabId from the DOWNLOAD_IDS/DOWNLOAD_LIBRARY
+// message's sender.tab.id).
+function broadcastProgress(payload, tabId) {
   chrome.runtime.sendMessage({ type: 'PROGRESS', ...payload }).catch(() => {});
+  if (tabId != null) {
+    chrome.tabs.sendMessage(tabId, { type: 'PROGRESS', ...payload }).catch(() => {});
+  }
 }
 
 function sanitizeForPath(name) {
@@ -33,37 +55,87 @@ function mediaDownloadUrl(id) {
 
 // ---- Downloading ----
 
-async function downloadIds(ids, folderName, jobId, titleById) {
+async function downloadIds(ids, folderName, jobId, titleById, tabId) {
   const folder = sanitizeForPath(folderName);
   let done = 0;
   let failed = 0;
-  for (const id of ids) {
+  // Bounded concurrency (same FETCH_CONCURRENCY/runWithConcurrency used by
+  // zip mode, defined further below, function declarations are hoisted so
+  // that's fine to reference here). This matters more than it used to:
+  // plain downloads now fetch each file's real bytes first too (see "How
+  // files get their extension" in the README), so a strictly sequential
+  // loop here would carry that fetch latency on top of what used to be a
+  // fast direct-URL handoff to Chrome's own download manager.
+  await runWithConcurrency(ids, FETCH_CONCURRENCY, async (id) => {
     try {
-      await new Promise((resolve, reject) => {
-        chrome.downloads.download(
-          {
-            url: mediaDownloadUrl(id),
-            filename: `Google Flow Downloads/${folder}/${filenameBaseFor(id, titleById)}`,
-            conflictAction: 'uniquify',
-          },
-          (downloadId) => {
-            if (chrome.runtime.lastError || downloadId === undefined) {
-              reject(chrome.runtime.lastError || new Error('download failed to start'));
-            } else {
-              resolve(downloadId);
-            }
-          }
-        );
-      });
+      await fetchAndDownloadOne(id, `Google Flow Downloads/${folder}/${filenameBaseFor(id, titleById)}`);
       done++;
     } catch (e) {
       failed++;
       console.warn('[GFBD] failed to download', id, e);
     }
-    broadcastProgress({ jobId, done, failed, total: ids.length });
-    await new Promise((r) => setTimeout(r, STAGGER_MS));
+    broadcastProgress({ jobId, done, failed, total: ids.length }, tabId);
+  });
+  broadcastProgress({ jobId, done, failed, total: ids.length, finished: true }, tabId);
+}
+
+// Fetches the real bytes ourselves and hands chrome.downloads.download() a
+// filename with the correct extension already attached, rather than handing
+// it the redirect-issuing URL directly and hoping onDeterminingFilename's
+// post-hoc extension guess is right. This is the fix for the .jfif issue:
+// letting Chrome sniff/guess an extension itself (its own pre-listener
+// heuristic, independent of anything onDeterminingFilename does) was
+// unreliable for image/jpeg specifically. Fetching first and using the
+// content-type we read ourselves, the same way zip mode already does (zip
+// mode never had this bug, because it was never depending on Chrome's guess
+// in the first place), removes the ambiguity entirely rather than
+// continuing to fight it after the fact.
+//
+// Trade-off worth knowing: this costs one full fetch-into-memory per file,
+// same as zip mode, rather than the previous "just hand off the URL and let
+// Chrome stream it" approach. For a large video that's a real, if brief,
+// memory cost. Correctness of the saved extension won for the tie-break
+// here since that was the actual complaint, this can be revisited if memory
+// on very large batches of big videos turns out to be a problem in
+// practice.
+function arrayBufferToBase64(buf) {
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
-  broadcastProgress({ jobId, done, failed, total: ids.length, finished: true });
+  return btoa(binary);
+}
+
+// Keyed by downloadId, populated the instant chrome.downloads.download()'s
+// callback fires (before onDeterminingFilename runs). For data: URLs,
+// Chrome's own item.filename seen inside onDeterminingFilename can be its
+// generic "download" default rather than what was passed to download()'s
+// filename option, that default doesn't start with "Google Flow
+// Downloads/" so the old prefix check silently left it unchanged, that was
+// the "downloaded as an untyped file named download" bug. Tracking the
+// intended name ourselves by downloadId, rather than trusting item.filename
+// at all, sidesteps that unreliability entirely.
+const pendingFilenames = new Map();
+
+async function fetchAndDownloadOne(id, filenameWithoutExt) {
+  const { buf, ext } = await fetchMediaBytes(id);
+  const dataUrl = `data:application/octet-stream;base64,${arrayBufferToBase64(buf)}`;
+  const desired = `${filenameWithoutExt}${ext}`;
+  await new Promise((resolve, reject) => {
+    chrome.downloads.download(
+      { url: dataUrl, filename: desired, conflictAction: 'uniquify' },
+      (downloadId) => {
+        if (chrome.runtime.lastError || downloadId === undefined) {
+          reject(chrome.runtime.lastError || new Error('download failed to start'));
+        } else {
+          pendingFilenames.set(downloadId, desired);
+          resolve(downloadId);
+        }
+      }
+    );
+  });
 }
 
 // ---- Zip mode ----
@@ -123,7 +195,7 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
-async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOverall, titleById) {
+async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOverall, titleById, tabId) {
   const zip = new JSZip();
   let done = doneSoFar;
   let failed = 0;
@@ -149,10 +221,10 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
       failed++;
       console.warn('[GFBD] zip: failed to fetch', id, e);
     }
-    broadcastProgress({ jobId, stage: 'zipping', done, failed, total: totalOverall });
+    broadcastProgress({ jobId, stage: 'zipping', done, failed, total: totalOverall }, tabId);
   });
 
-  broadcastProgress({ jobId, stage: 'compressing', percent: 0, done, failed, total: totalOverall });
+  broadcastProgress({ jobId, stage: 'compressing', percent: 0, done, failed, total: totalOverall }, tabId);
   // STORE, not DEFLATE: every file going into this zip is already a
   // compressed format (jpg/png/webp/mp4). Running DEFLATE over
   // already-compressed bytes buys close to zero size reduction but still
@@ -164,9 +236,9 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
   // "Compressing..." into an actual moving number instead of a static
   // message with no way to tell whether it's stuck or just working.
   const base64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' }, (metadata) => {
-    broadcastProgress({ jobId, stage: 'compressing', percent: Math.round(metadata.percent), done, failed, total: totalOverall });
+    broadcastProgress({ jobId, stage: 'compressing', percent: Math.round(metadata.percent), done, failed, total: totalOverall }, tabId);
   });
-  broadcastProgress({ jobId, stage: 'saving-to-disk', done, failed, total: totalOverall });
+  broadcastProgress({ jobId, stage: 'saving-to-disk', done, failed, total: totalOverall }, tabId);
   const dataUrl = 'data:application/zip;base64,' + base64;
   await new Promise((resolve, reject) => {
     chrome.downloads.download(
@@ -181,7 +253,7 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
   // downloadIdsAsZip sends once every part is done, this is what lets a
   // multi-part batch show "part 1 of 3 saved" as each one actually lands
   // instead of going quiet until the entire batch finishes.
-  broadcastProgress({ jobId, stage: 'part-saved', partLabel: filenameBase, done, failed, total: totalOverall });
+  broadcastProgress({ jobId, stage: 'part-saved', partLabel: filenameBase, done, failed, total: totalOverall }, tabId);
   return { done, failed };
 }
 
@@ -191,58 +263,47 @@ async function buildAndSaveOneZip(ids, filenameBase, jobId, doneSoFar, totalOver
 // anything gets written to disk, and a failure partway through loses the
 // whole batch. Chunking bounds memory per zip and means a failure only costs
 // one part, not the whole run.
-async function downloadIdsAsZip(ids, folderName, jobId, titleById) {
+async function downloadIdsAsZip(ids, folderName, jobId, titleById, tabId) {
   const folder = sanitizeForPath(folderName);
   const chunks = chunkArray(ids, ZIP_CHUNK_SIZE);
   let done = 0;
   let failed = 0;
   for (let i = 0; i < chunks.length; i++) {
     const base = chunks.length > 1 ? `${folder} (part ${i + 1} of ${chunks.length})` : folder;
-    const result = await buildAndSaveOneZip(chunks[i], base, jobId, done, ids.length, titleById);
+    const result = await buildAndSaveOneZip(chunks[i], base, jobId, done, ids.length, titleById, tabId);
     done = result.done;
     failed += result.failed;
   }
-  broadcastProgress({ jobId, stage: 'zipping', done, failed, total: ids.length, finished: true });
+  broadcastProgress({ jobId, stage: 'zipping', done, failed, total: ids.length, finished: true }, tabId);
 }
 
-// Fix the saved file extension once we know the real content type / final
-// redirect target (…/image/… or …/video/…), since we can't know that up
-// front when we only have a media ID.
+// Defense-in-depth only now, not the primary mechanism. Every download this
+// extension issues (plain files via fetchAndDownloadOne, zips via
+// buildAndSaveOneZip) now goes out with its correct extension already
+// baked into the filename before chrome.downloads.download() is ever
+// called, using an extension determined from bytes fetched directly rather
+// than trusting Chrome's own guess. That's the actual fix for the .jfif
+// issue: Chrome's pre-listener heuristic for guessing an extension from a
+// sniffed content type (independent of anything an extension does) was
+// unreliable specifically for image/jpeg, landing on .jfif rather than
+// .jpg, and by the time this listener used to run, that guess had already
+// been baked into item.filename in a way the old code's "if it looks like
+// it already has an extension, leave it alone" check mistook for
+// intentional. Fetching first sidesteps that ambiguity rather than
+// continuing to patch around it after the fact. This listener still exists
+// for the (currently theoretical) case of item.finalUrl/item.mime pointing
+// at a real http(s) URL this extension didn't already fully name, blob:
+// and data: URLs (everything this extension issues now) won't match either
+// branch below and fall through to suggest() unchanged, leaving the
+// already-correct filename alone.
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  if (!item.filename || !item.filename.startsWith('Google Flow Downloads/')) {
-    suggest();
+  if (pendingFilenames.has(item.id)) {
+    const filename = pendingFilenames.get(item.id);
+    pendingFilenames.delete(item.id);
+    suggest({ filename });
     return;
   }
-  let ext = '';
-  const url = item.finalUrl || item.url || '';
-  if (/\/video\//.test(url)) ext = '.mp4';
-  else if (/\/image\//.test(url)) ext = '.jpg';
-  else if (item.mime) {
-    if (item.mime.includes('video')) ext = '.mp4';
-    else if (item.mime.includes('png')) ext = '.png';
-    else if (item.mime.includes('jpeg') || item.mime.includes('jpg')) ext = '.jpg';
-    else if (item.mime.includes('webp')) ext = '.webp';
-  }
-  if (!ext) {
-    // Couldn't determine anything ourselves, leave whatever Chrome already
-    // suggested rather than guessing blind.
-    suggest();
-    return;
-  }
-  // Unconditionally strip whatever extension-looking suffix is already on
-  // item.filename and replace it with what we just determined, rather than
-  // the old "if it already looks like it has one, leave it alone" check.
-  // That check was the actual .jfif bug: our download URL
-  // (media.getMediaUrlRedirect?name=<uuid>) has no file extension of its
-  // own for Chrome to go on, so Chrome's own pre-listener heuristic sniffs
-  // the content type and guesses an extension before this listener even
-  // runs, for image/jpeg it sometimes lands on .jfif rather than .jpg. That
-  // Chrome-guessed .jfif matched the old "already has an extension, skip
-  // it" check, so it was never getting corrected to the .jpg we actually
-  // determine from the real finalUrl/mime here. Always recomputing and
-  // overwriting fixes that.
-  const withoutExt = item.filename.replace(/\.[a-z0-9]{2,5}$/i, '');
-  suggest({ filename: withoutExt + ext });
+  suggest();
 });
 
 // ---- Library-wide discovery ----
@@ -390,28 +451,20 @@ async function downloadEntireLibrary(jobId) {
     broadcastProgress({ jobId, stage: 'listing-media', projectIndex: i + 1, totalProjects: projects.length, mediaFound: allIds.length });
   }
 
-  // Download grouped by project folder.
+  // Download grouped by project folder. Same bounded concurrency as
+  // downloadIds, see the comment there, same reasoning applies here.
   let done = 0;
   let failed = 0;
-  for (const id of allIds) {
+  await runWithConcurrency(allIds, FETCH_CONCURRENCY, async (id) => {
     const folder = sanitizeForPath(idToFolder.get(id) || 'Library');
     try {
-      await new Promise((resolve, reject) => {
-        chrome.downloads.download(
-          { url: mediaDownloadUrl(id), filename: `Google Flow Downloads/${folder}/${filenameBaseFor(id, titleById)}`, conflictAction: 'uniquify' },
-          (downloadId) => {
-            if (chrome.runtime.lastError || downloadId === undefined) reject(chrome.runtime.lastError);
-            else resolve(downloadId);
-          }
-        );
-      });
+      await fetchAndDownloadOne(id, `Google Flow Downloads/${folder}/${filenameBaseFor(id, titleById)}`);
       done++;
     } catch (e) {
       failed++;
     }
     broadcastProgress({ jobId, stage: 'downloading', done, failed, total: allIds.length });
-    await new Promise((r) => setTimeout(r, STAGGER_MS));
-  }
+  });
   broadcastProgress({ jobId, stage: 'downloading', done, failed, total: allIds.length, finished: true });
 }
 
@@ -419,10 +472,17 @@ async function downloadEntireLibrary(jobId) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'DOWNLOAD_IDS') {
+    // sender.tab.id is only set when this message came from a content
+    // script (the in-page toolbar), not from the popup, that's the id
+    // broadcastProgress needs to be able to reach that toolbar's status
+    // text via chrome.tabs.sendMessage. When the popup itself is the
+    // sender, sender.tab is undefined and broadcastProgress's plain
+    // chrome.runtime.sendMessage half already covers reaching it.
+    const tabId = sender.tab?.id;
     if (msg.asZip) {
-      downloadIdsAsZip(msg.ids, msg.folderName, msg.jobId, msg.titles);
+      downloadIdsAsZip(msg.ids, msg.folderName, msg.jobId, msg.titles, tabId);
     } else {
-      downloadIds(msg.ids, msg.folderName, msg.jobId, msg.titles);
+      downloadIds(msg.ids, msg.folderName, msg.jobId, msg.titles, tabId);
     }
     sendResponse({ ok: true, started: true });
     return false;

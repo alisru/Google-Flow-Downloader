@@ -61,28 +61,24 @@
 <body>
   <h1>Google Flow Bulk Downloader</h1>
 
-  <div class="row" style="display:flex; align-items:center; gap:6px;">
-    <input type="checkbox" id="chkZip" style="width:auto; margin:0;" />
-    <label for="chkZip" style="font-size:12px;">Download as one .zip instead of separate files</label>
-  </div>
-  <div class="note" id="zipNote">Applies to the two buttons below. Not offered for the whole library, since that can mean fetching hundreds of large video files into memory before it can write a single zip.</div>
-
-  <div class="divider"></div>
-
-  <div class="row">
-    <button id="btnCurrentProject">Download current project (all)</button>
+  <div class="row" style="display:flex; gap:6px;">
+    <button id="btnCurrentProject" style="margin-bottom:0;">Download current project</button>
+    <button id="btnCurrentProjectZip" class="secondary" style="margin-bottom:0;">to .zip</button>
   </div>
 
-  <div class="row">
-    <button id="btnToggleSelect" class="secondary">Enable selection mode</button>
-    <button id="btnDownloadSelected" disabled>Download selected</button>
+  <div class="row" style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+    <button id="btnToggleSelect" class="secondary" style="margin-bottom:0;">Enable selection mode</button>
+  </div>
+  <div class="row" style="display:flex; gap:6px;">
+    <button id="btnDownloadSelected" disabled style="margin-bottom:0;">Download selected</button>
+    <button id="btnDownloadSelectedZip" class="secondary" disabled style="margin-bottom:0;">to .zip</button>
   </div>
 
   <div class="divider"></div>
 
   <div class="row">
     <button id="btnLibrary" class="danger">Download entire library</button>
-    <div class="note">Walks every project you have and downloads all media as separate files. Can take a while for large libraries and may need one round of tuning if Flow's internal data shape has changed (details show up in the extension's service worker console).</div>
+    <div class="note">Walks every project you have and downloads all media as separate files. Not offered as a zip: that can mean fetching hundreds of large video files into memory before it can write a single archive. Can take a while for large libraries and may need one round of tuning if Flow's internal data shape has changed (details show up in the extension's service worker console).</div>
   </div>
 
   <div id="status">Open a Google Flow project tab to get started.</div>

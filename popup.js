@@ -1,9 +1,10 @@
 const statusEl = document.getElementById('status');
 const btnCurrentProject = document.getElementById('btnCurrentProject');
+const btnCurrentProjectZip = document.getElementById('btnCurrentProjectZip');
 const btnToggleSelect = document.getElementById('btnToggleSelect');
 const btnDownloadSelected = document.getElementById('btnDownloadSelected');
+const btnDownloadSelectedZip = document.getElementById('btnDownloadSelectedZip');
 const btnLibrary = document.getElementById('btnLibrary');
-const chkZip = document.getElementById('chkZip');
 
 let selectionModeOn = false;
 let activeTabId = null;
@@ -41,7 +42,7 @@ async function init() {
   }
 }
 
-btnCurrentProject.addEventListener('click', async () => {
+async function downloadCurrentProject(asZip) {
   if (!activeTabId) return;
   setStatus('Scrolling through project media, this can take a moment for large projects...');
   const res = await chrome.tabs.sendMessage(activeTabId, { type: 'GET_ALL_MEDIA_IDS' });
@@ -50,9 +51,11 @@ btnCurrentProject.addEventListener('click', async () => {
     return;
   }
   const jobId = 'current-' + Date.now();
-  setStatus(`Found ${res.ids.length} items. Starting ${chkZip.checked ? 'zip build' : 'download'}...`);
-  chrome.runtime.sendMessage({ type: 'DOWNLOAD_IDS', ids: res.ids, titles: res.titles, folderName: res.projectName, jobId, asZip: chkZip.checked });
-});
+  setStatus(`Found ${res.ids.length} items. Starting ${asZip ? 'zip build' : 'download'}...`);
+  chrome.runtime.sendMessage({ type: 'DOWNLOAD_IDS', ids: res.ids, titles: res.titles, folderName: res.projectName, jobId, asZip });
+}
+btnCurrentProject.addEventListener('click', () => downloadCurrentProject(false));
+btnCurrentProjectZip.addEventListener('click', () => downloadCurrentProject(true));
 
 btnToggleSelect.addEventListener('click', async () => {
   if (!activeTabId) return;
@@ -60,10 +63,11 @@ btnToggleSelect.addEventListener('click', async () => {
   await chrome.tabs.sendMessage(activeTabId, { type: selectionModeOn ? 'ENABLE_SELECTION_MODE' : 'DISABLE_SELECTION_MODE' });
   btnToggleSelect.textContent = selectionModeOn ? 'Disable selection mode' : 'Enable selection mode';
   btnDownloadSelected.disabled = !selectionModeOn;
+  btnDownloadSelectedZip.disabled = !selectionModeOn;
   setStatus(selectionModeOn ? 'Click thumbnails in the page to select them, then come back here.' : 'Selection mode off.');
 });
 
-btnDownloadSelected.addEventListener('click', async () => {
+async function downloadSelected(asZip) {
   if (!activeTabId) return;
   const res = await chrome.tabs.sendMessage(activeTabId, { type: 'GET_SELECTED_MEDIA_IDS' });
   if (!res?.ids?.length) {
@@ -71,9 +75,11 @@ btnDownloadSelected.addEventListener('click', async () => {
     return;
   }
   const jobId = 'selected-' + Date.now();
-  setStatus(`${chkZip.checked ? 'Zipping' : 'Downloading'} ${res.ids.length} selected items...`);
-  chrome.runtime.sendMessage({ type: 'DOWNLOAD_IDS', ids: res.ids, titles: res.titles, folderName: res.projectName, jobId, asZip: chkZip.checked });
-});
+  setStatus(`${asZip ? 'Zipping' : 'Downloading'} ${res.ids.length} selected items...`);
+  chrome.runtime.sendMessage({ type: 'DOWNLOAD_IDS', ids: res.ids, titles: res.titles, folderName: res.projectName, jobId, asZip });
+}
+btnDownloadSelected.addEventListener('click', () => downloadSelected(false));
+btnDownloadSelectedZip.addEventListener('click', () => downloadSelected(true));
 
 btnLibrary.addEventListener('click', async () => {
   const confirmed = confirm('This downloads every media item across every project in your Flow account. Continue?');

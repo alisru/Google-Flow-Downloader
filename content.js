@@ -9,6 +9,13 @@
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+// Same purpose as the matching GFBD_BUILD in background.js: check this in
+// the page's own devtools console after reloading the extension AND
+// refreshing the Flow tab, to confirm new code actually landed before
+// concluding a fix "doesn't work".
+const GFBD_BUILD = 'gfbd-build-2026-07-02j-fetch-first-concurrent';
+console.log('[GFBD] content script loaded:', GFBD_BUILD);
+
 let selectionModeOn = false;
 const selectedIds = new Set();
 const checkboxByTile = new WeakMap();

@@ -4,7 +4,15 @@ A Chrome extension (Manifest V3) that bulk-downloads images and videos generated
 
 ## How it works
 
-Flow renders every thumbnail as an `<img>` whose source points at Flow's own redirect endpoint, `media.getMediaUrlRedirect?name=<mediaId>`, which 302s to a signed, expiring CDN URL under `flow-content.google`. The extension reads media IDs straight out of the page (or, for library mode, out of Flow's project list and per-project data endpoints), then hands each ID to `chrome.downloads.download()` pointed at that same redirect endpoint. Chrome resolves the redirect live and saves the file, so there's no stale-signed-URL problem even on a large batch.
+Flow renders every thumbnail as an `<img>` whose source points at Flow's own redirect endpoint, `media.getMediaUrlRedirect?name=<mediaId>`, which 302s to a signed, expiring CDN URL under `flow-content.google`. The extension reads media IDs straight out of the page (or, for library mode, out of Flow's project list and per-project data endpoints), fetches each file's actual bytes itself (see "How files get their extension" below for why), and saves it via `chrome.downloads.download()` pointed at a local data URL with the correct filename, including extension, already attached.
+
+## How files get their extension
+
+Every download this extension issues, plain files and zip entries alike, fetches the real bytes first and reads the true `Content-Type` off that response, rather than handing Chrome a bare URL and trusting Chrome's own guess at what to save it as.
+
+This wasn't the original design, and got here in two steps. Plain downloads used to hand `chrome.downloads.download()` the redirect-issuing URL directly and let Chrome resolve everything itself, faster, since Chrome could stream the file straight to disk without it ever passing through the extension. That fell over on jpeg specifically: the `media.getMediaUrlRedirect?name=<mediaId>` URL has no file extension of its own for Chrome to go on, and Chrome's own pre-extension heuristic for guessing one from a sniffed `image/jpeg` content type isn't reliable, it would sometimes land on `.jfif` instead of `.jpg`.
+
+Fetching the bytes first and building a data URL removes that guessing entirely, but introduced a second, sharper bug on the way: `chrome.downloads.onDeterminingFilename`'s `item.filename`, for a `data:` URL specifically, can be Chrome's own generic `"download"` default rather than the filename actually passed to `download()`'s `filename` option. Trusting `item.filename` there (checking whether it already looked like one of ours and only touching it if so) meant that default silently went through untouched, once, this shipped as "downloads its own file with no name or type at all." The fix: `chrome.downloads.download()`'s callback hands back a `downloadId` synchronously, before `onDeterminingFilename` ever fires, so the intended filename is now stored in a `Map` keyed by that `downloadId` the moment it's known, and `onDeterminingFilename` looks itself up by `item.id` in that map rather than trusting anything Chrome hands it in `item.filename`.
 
 Files land under a `Google Flow Downloads` folder in your normal Chrome downloads location, organized into one subfolder per project.
 
@@ -28,13 +36,13 @@ Entire library: click "Download entire library" from any Flow tab. It pages thro
 
 ## Speed, and why zipping is slower than plain downloads
 
-Plain (non-zip) downloads and zip downloads work fundamentally differently, and that difference is why zipping takes noticeably longer for the same number of files.
+Plain (non-zip) downloads and zip downloads both fetch every file's actual bytes into the extension now (see "How files get their extension" above for why plain downloads changed to work this way), so the gap between them is smaller than it used to be, but zip mode is still the slower of the two.
 
-Plain downloads never touch the file's actual bytes in the extension itself: each ID is just handed to `chrome.downloads.download()` pointed at the redirect endpoint, and Chrome's own download manager follows the redirect and writes the file straight to disk. The extension's only job is calling that once per file, staggered 150ms apart so as not to fire everything at the exact same instant. That stagger is the main cost here (roughly 150ms x number of files, plus whatever Chrome's download manager itself takes), not the fetch.
+Plain downloads fetch and save one file at a time, staggered 150ms apart between files so as not to fire everything at once, each one lands on disk as soon as its own fetch finishes.
 
-Zip mode is different by necessity: to bundle files into one archive, the extension has to actually fetch each file's real bytes into memory first (there's no way to hand a zip library a URL and have it stream the bytes in on its own here), then run the zip library over all of it. That's real network transfer time for every file, not just a redirect hand-off, and it has to finish before the archive can be written.
+Zip mode has to wait for every file in a batch (or a batch's worth, once chunked) to finish fetching before the archive itself can be built and written, plus the time to actually build it. That's real, unavoidable extra latency zip mode carries that plain downloads don't: nothing gets saved until the whole batch, and then the compression step, are both done.
 
-Two things speed this up as much as currently seems reasonable without more testing:
+Two things speed up the fetching itself as much as currently seems reasonable without more testing:
 
 Concurrent fetches: files are fetched 6 at a time rather than one at a time. This is a deliberate middle ground, not a measured optimum, going higher would likely finish faster still, but there's no confirmed data yet on whether Google's endpoint rate-limits a burst of simultaneous requests to media.getMediaUrlRedirect, and 6 was chosen as a reasonably safe default rather than something benchmarked against an actual limit. If this turns out to be too conservative (or too aggressive) in practice, this is the number to revisit.
 
